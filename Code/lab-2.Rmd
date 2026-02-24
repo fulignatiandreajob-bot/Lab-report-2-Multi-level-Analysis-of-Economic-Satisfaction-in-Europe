@@ -1,0 +1,312 @@
+---
+title: "Untitled"
+output: html_document
+date: "2026-01-08"
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(psych)
+library(lme4)
+library(lmerTest)
+library(performance)
+library(ggeffects)
+
+options(scipen = 999)
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Setup:
+
+```{r intro}
+# Imported the dataset and renamed some variables
+mini_ess <- read_csv("ESS11MD_e01_2.csv", 
+  col_select = c(
+    age = agea,
+    gndr,
+    born = brncntr,
+    eduyrs,
+    unemploy = mnactic,
+    income = hinctnta,
+    GDP = c_gdp_eurhab_2023,
+    satis = stfeco,
+    gini = c_gini_2024,
+    unemploy2024 = n2_unraall_2024,
+    cntry,
+    nuts2               
+  ), show_col_types = FALSE
+)
+
+```
+
+
+Variables list
+
+dependent variable
+- How satisfied with present state of economy in country: satis = stfeco,
+
+Individual-level controls (level-1):
+- Age: age
+- sex: gender = gndr
+- born in country: born = brncntr
+- years of education: eduyrs
+- being unemployed: unemploy = mnactic (I'll trasform it in dummy)
+- household income (individual level, measured in deciles of the country-specific income distribution): income = hinctnta
+
+Contextual predictors:
+level 2(regions):
+- Unemployment rates by all ages in % - 2024: unemploy2024 = n2_unraall_2024
+
+level 3(countries):
+- GDP at current market prices – Euro per inhabitant 2023: GDP = c_gdp_eurhab_2023
+- Gini coefficient: gini = c_gini_2024
+
+variables for multilevel analysis
+- Country: cntry
+- Nutscode level 2 2025: nuts2  
+
+
+
+
+Part 1
+
+In the following text I clean the dataset and indicate if variables are factor or numeric
+
+```{r intro}
+
+#celan the data
+mini_ess <- mini_ess %>% 
+  mutate(age = if_else(age %in% c(99, 999), NA, age),
+         gndr = na_if(gndr, 9), 
+         born = if_else(born %in% c(7, 8, 9), NA, born), 
+         eduyrs = if_else(eduyrs >= 77, NA, eduyrs),
+         unemploy = if_else(unemploy >= 66, NA, unemploy),
+         unemploy = if_else(unemploy %in% c(3, 4), 1, 0),
+         income = if_else(income >= 77, NA, income), 
+         satis = if_else(satis >= 77, NA, satis))
+
+
+# make some factor
+mini_ess <- mini_ess %>% 
+  mutate(age = as.numeric(age),
+         gndr = as_factor(gndr),
+         born = as_factor(born),
+         eduyrs = as.numeric(eduyrs),
+         income = as.numeric(income),
+         unemploy = as.numeric(unemploy),
+         GDP = as.numeric(GDP), 
+         satis = as.numeric(satis), 
+         gini = as.numeric(gini), 
+         unemploy2024 = as.numeric(unemploy2024), 
+         cntry = as_factor(cntry), 
+         nuts2 = as_factor(nuts2))
+
+```
+
+
+I then count the number of countries and regions. And I create a table that report: mean, sd, min and max.
+
+```{r intro}
+num_cntry <- n_distinct(mini_ess$cntry)
+num_regions <- n_distinct(mini_ess$nuts2)
+num_cntry #there are 28 countries
+num_regions #there are 168 regions
+
+#created a dataframe with the descriptive statistic
+table_ess <- as.data.frame(describe(mini_ess[, c("age", "eduyrs", "income", "unemploy", "GDP", "satis", "gini", "unemploy2024", "born", "gndr")]))
+
+# clean the dataframe selecting only information that are relevant
+mini_frame <- table_ess  %>%
+  select(mean, sd, min, max)
+round(mini_frame, 2)
+
+#save the dataframe as table
+mini_frame %>%
+  kbl(digits = 2) %>% #it create a table with two decimals
+  kable_classic(full_width = F) %>% #it apply the academic style
+  save_kable("table1.png", zoom = 5) #it save the tabel
+
+#age: The average age of the sample is approximately 51.6 years, with a wide range from 15 to 90 years, it is a rappresentative sample of adults
+
+#eduyrs (Years of Education): The average is roughly 13.2 years, which corresponds to finishing high school and starting university.
+
+#income: This variable ranges from 1 to 10 with a mean of 5.56. The mean is almost in the middle, indicating a fairly normal distribution.
+
+#GDP: The mean GDP is 35,247, but there is a huge SD (20,012). Also the range is really big (Min: 11,000 to Max: 96,300), this dataset includes very wealthy countries/regions alongside much poorer ones.
+
+#gini: The average Gini index is 29.27. The range (21.7 to 38.4) reflects a pretty low inequality that is caracteristic of European countries
+
+#unemploy2024: The mean unemployment rate is 6.17%. However, the maximum is 28.3%, indicating that there is at least a country with a really high unemployment rate
+
+#satis: The mean score is 4.47 (on a 0-10 scale). People are a little critic about their satisfaction on the countries state of the economy, falling a little below the midpoint of 5, however indicators about satisfaction on the state of the economy always register low scores.
+
+#Born: The mean indicates that most of the people are born in the country where they live
+
+#gender: Since the mean is 1.53, it means that there are slightly more woman (2) than man (1)
+
+```
+
+In this section We create two graphs to visualize the descriptive relationship between the dependent variable and the focal x-variables (gini and unemployment).
+
+```{r intro}
+
+df_plot <- mini_ess %>% 
+  group_by(cntry) %>% 
+  summarize(
+    mean_sat = mean(satis, na.rm = TRUE),      # Aggiunto na.rm = TRUE per ignorare i dati mancanti
+    mean_gini = mean(gini, na.rm = TRUE)      # Media del Gini (essendo uguale per paese, va bene)
+  )
+
+ggplot(df_plot, aes(x=mean_gini, y=mean_sat)) + 
+  geom_point() + 
+  geom_smooth(method="lm") + 
+  geom_text(aes(label = cntry), vjust = -0.5, size = 3) +
+  labs(
+    title="Descriptive relation: Gini index vs Economic satisfaction",
+    x = "Gini index",
+    y = "Economic satisfaction"
+  ) +
+  theme_minimal()
+
+df_plot2 <- mini_ess %>% 
+  group_by(cntry) %>% 
+  summarize(
+    mean_sat = mean(satis, na.rm = TRUE),      # Aggiunto na.rm = TRUE per ignorare i dati mancanti
+    unemploy_2024 = mean(unemploy2024, na.rm = TRUE)      # Media del Gini (essendo uguale per paese, va bene)
+  )
+
+ggplot(df_plot2, aes(x=unemploy_2024, y=mean_sat)) + 
+  geom_point() + 
+  geom_smooth(method="lm") + 
+  geom_text(aes(label = cntry), vjust = -0.5, size = 3) +
+  labs(
+    title="Descriptive relation: Unemployment rate vs Economic satisfaction",
+    x = "Unemployment rate",
+    y = "Economic satisfaction"
+  ) +
+  theme_minimal()
+
+#There is a clear and strong negative correlation between the variables. Countries with lower income inequality (lower Gini index) tend to report higher average levels of economic satisfaction.
+
+##There is a negative correlation between the variables. It means that countries with higher unemployment rate tend to have higher lower levels of economic satisfaction.
+
+```
+
+
+
+
+
+
+
+PART 2
+
+We frist create a model 0 to see how much variation exists at the different levels (regions vs. countries)
+
+```{r intro}
+
+model0 <- lmer(satis ~ 1 + (1 | cntry/nuts2), data = mini_ess, REML = FALSE)
+summary(model0)
+
+summary(model0)
+icc(model0)
+
+#The overall Intraclass Correlation Coefficient (ICC) is 0.170. This indicates that 17% of the total variability in an individual's satisfaction is accounted for by the context in which they live (the combined effect of their country and region).
+
+#This analyis reveal that most of this variation is driven by the country level (variance = 0.85), while the regional level explains a much smaller proportion (variance = 0.11).
+
+```
+
+PARTE 3
+
+```{r intro}
+
+#centering age and eduyrs
+mini_ess <- mini_ess %>%
+  group_by(cntry) %>%
+  mutate(
+    age_c = age - mean(age, na.rm = TRUE),
+    eduyrs_c = eduyrs - mean(eduyrs, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+mini_ess <- mini_ess %>%
+  group_by(nuts2) %>%
+  mutate(
+    unemploy_c = unemploy - mean(unemploy, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+mini_ess <- mini_ess %>%
+  mutate(
+    c_gini_2024_c = gini - mean(gini, na.rm = TRUE),
+    unemploy_2024_c =unemploy2024 - mean(unemploy2024, na.rm = TRUE),
+    GDP_c = GDP - mean(GDP, na.rm = TRUE)
+  )
+
+
+#three level regression
+model1 <- lmer(
+  satis ~ 
+    # first level (individual)
+    age_c + 
+    eduyrs_c + 
+    gndr + 
+    born + 
+    unemploy_c +
+    income +
+    
+    # Contextual predictors:
+    unemploy_2024_c +             # L2
+    c_gini_2024_c +                   # L3
+    GDP_c +                  # L3
+    (1 | cntry / nuts2),         # regions is inside countries
+  
+  data = mini_ess
+)
+
+summary(model1)
+
+#The analysis shows a negative coefficient for the gini index (b=−0.066), It means that higher inequality might be associated with lower economic satisfaction. However, this relationship is not statistically significant, since the P-value is higher then 0.05 (p=.079). Therefore, H1 is not supported, although a negative trend is observable. However, It's important to con that the p-value is close to the 0.05%, it means that it could be marginally significant, there are still the possiility that the lack of significance might be due to the limited number of observation that decrease from the model 0 to this model.
+
+#At the same time, the results reveal a statistically significant negative effect for regional unemployment(unemploy2024) on economic satisfaction (b=−0.045,p<.05). This indicates that, taking individual characteristics constant as control variables, respondents living in regions with higher unemployment rates are significantly less satisfied with the state of the national economy.
+
+
+```
+
+
+
+
+PARTE 4
+
+```{r intro}
+
+# A) Income inequality
+
+pred_gini <- ggpredict(model1, terms = "c_gini_2024_c") 
+
+# create the first grpah
+plot(pred_gini) +
+  labs(
+    title = "Effect of the inequity (Gini) on Satisfaction with the National Economy",
+    x = "Gini index",
+    y = "Predicted satisfaction"
+  ) +
+  theme_minimal()
+
+
+# B) Unemployment rate
+
+pred_unempl <- ggpredict(model1, terms = "unemploy_2024_c")
+
+# create the second graph
+plot(pred_unempl) +
+  labs(
+    title = "Effect of regional unemployment on satisfaction with the national economy",
+    x = "Regional unemployment",
+    y = "Predicted satisfaction"
+  ) +
+  theme_minimal()
+
+
+```
